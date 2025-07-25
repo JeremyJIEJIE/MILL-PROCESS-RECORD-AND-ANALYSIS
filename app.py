@@ -5,6 +5,7 @@ from datetime import datetime
 from st_aggrid import AgGrid, GridOptionsBuilder
 import plotly.graph_objs as go
 import plotly.express as px
+import numpy as np
 
 # Matplotlib 中文支持
 import matplotlib.pyplot as plt
@@ -119,18 +120,43 @@ if menu == "输入数据":
 
 elif menu == "数据表":
     st.header("数据表管理")
+
+    # 1. 在侧边栏设置小数位数
+    decimal_places = st.sidebar.number_input("数值小数位数", min_value=0, max_value=6, value=3, step=1)
+
+    # 2. 生成显示用DataFrame
     df_show = df.copy()
     df_show['日期'] = pd.to_datetime(df_show['日期'], errors='coerce').dt.strftime('%Y-%m-%d')
+
     for c in df_show.columns:
         if c != '日期':
-            df_show[c] = pd.to_numeric(df_show[c], errors='coerce').round(4)
+            # 动态保留小数位
+            df_show[c] = np.round(pd.to_numeric(df_show[c], errors='coerce'), decimal_places)
+
+    # 3. 构建AgGrid参数，自动列宽
     gb = GridOptionsBuilder.from_dataframe(df_show)
-    gb.configure_default_column(editable=True, resizable=True)
+    gb.configure_default_column(
+        editable=True,
+        resizable=True,
+        autoWidth=True,  # 自动宽度
+        cellStyle={'textAlign': 'center'},
+    )
+    gb.configure_column("日期", width=360)
     for col in df_show.columns:
         gb.configure_column(col, filter=False, menuTabs=[])
-    gridOptions = gb.build()
-    AgGrid(df_show, gridOptions=gridOptions, fit_columns_on_grid_load=True, allow_unsafe_jscode=True, theme='alpine')
 
+    gridOptions = gb.build()
+
+    # 4. 渲染表格
+    AgGrid(
+        df_show,
+        gridOptions=gridOptions,
+        fit_columns_on_grid_load=True,  # 自动列宽
+        allow_unsafe_jscode=True,
+        theme='alpine'
+    )
+
+    # 5. 添加公式列表单
     st.markdown("### 添加公式列")
     with st.form("add_formula", clear_on_submit=True):
         col1, col2 = st.columns([1,2])
@@ -147,8 +173,10 @@ elif menu == "数据表":
 
 elif menu == "分析图表":
     st.header("指标趋势分析")
-    dfp = derive_data(df.copy()).dropna(subset=['日期']).sort_values('日期')
-    metrics = [col for col in dfp.columns if col != "日期"]
+    dfp = df.copy()  # 这里是关键，确保dfp变量存在
+    dfp['日期'] = pd.to_datetime(dfp['日期'], errors='coerce')
+    dfp = dfp.dropna(subset=['日期'])
+    metrics = [col for col in dfp.columns if col != '日期']  # <-- 在这里定义
     min_date, max_date = dfp['日期'].min().date(), dfp['日期'].max().date()
     left, right = st.columns([1, 3])
     with left:
