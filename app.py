@@ -177,7 +177,17 @@ elif menu == "分析图表":
     dfp['日期'] = pd.to_datetime(dfp['日期'], errors='coerce')
     dfp = dfp.dropna(subset=['日期'])
     metrics = [col for col in dfp.columns if col != '日期']  # <-- 在这里定义
-    min_date, max_date = dfp['日期'].min().date(), dfp['日期'].max().date()
+    dfp = df.copy()
+    dfp['日期'] = pd.to_datetime(dfp['日期'], errors='coerce')
+    dfp = dfp.dropna(subset=['日期'])
+    metrics = [col for col in dfp.columns if col != '日期']
+
+    if dfp['日期'].notna().any():
+        min_date = dfp['日期'].min().date()
+        max_date = dfp['日期'].max().date()
+    else:
+        today = datetime.today().date()
+        min_date = max_date = today
     left, right = st.columns([1, 3])
     with left:
         start = st.date_input("开始日期", min_value=min_date, max_value=max_date, value=min_date)
