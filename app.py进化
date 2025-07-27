@@ -1,0 +1,272 @@
+import streamlit as st
+import pandas as pd
+import os
+from datetime import datetime
+import numpy as np
+import plotly.graph_objs as go
+import plotly.express as px
+import matplotlib.pyplot as plt
+
+# Matplotlib 中文支持
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS']
+plt.rcParams['axes.unicode_minus'] = False
+
+st.set_page_config(page_title="选矿数据管理系统", page_icon="⛏️", layout="wide")
+
+# 数据和字段配置路径
+DATA_PATH = "data.xlsx"
+FIELDS_PATH = "fields.xlsx"
+
+# 默认字段配置
+DEFAULT_FIELDS = [
+    {"key":"日期",     "label":"日期",       "type":"date",  "step":1,      "unit":""    },
+]
+# 保证 fields.xlsx 存在
+if not os.path.exists(FIELDS_PATH):
+    pd.DataFrame(DEFAULT_FIELDS).to_excel(FIELDS_PATH, index=False)
+
+# 加载/初始化数据
+@st.cache_data
+def load_data():
+    if not os.path.exists(DATA_PATH):
+        # 初始空表
+        cols = [f["key"] for f in DEFAULT_FIELDS] + ["尾矿品位", "回收率", "回收金属量"]
+        pd.DataFrame(columns=cols).to_excel(DATA_PATH, index=False)
+    df = pd.read_excel(DATA_PATH, parse_dates=['日期'])
+    return df
+
+def save_data(df):
+    df['日期'] = pd.to_datetime(df['日期'], errors='coerce')
+    df.to_excel(DATA_PATH, index=False)
+    st.session_state['data_updated'] = True
+    st.cache_data.clear()
+    st.rerun()
+
+def derive_data(df):
+    df = df.copy()
+    for col in ['原矿吨数', '原矿金品位', '尾液含金', '尾固含金']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df2 = df.dropna(subset=['原矿吨数', '原矿金品位', '尾液含金', '尾固含金'])
+    df2['尾矿品位'] = df2['尾液含金'] + df2['尾固含金']
+    df2['回收率'] = ((df2['原矿金品位'] - df2['尾矿品位']) / df2['原矿金品位']).clip(0, 1)
+    df2['回收金属量'] = df2['原矿吨数'] * df2['原矿金品位'] * df2['回收率']
+    df.update(df2)
+    return df
+
+def read_uploaded_file(f, schema):
+    # 读原始
+    if f.name.lower().endswith(('.csv', '.txt')):
+        raw = pd.read_csv(f, sep=None, engine='python')
+    else:
+        raw = pd.read_excel(f)
+    raw_cols = [c.strip() for c in raw.columns]
+    df2 = pd.DataFrame()
+    for field in schema:
+        k = field['key']; lab = field['label']
+        if k in raw_cols:
+            df2[k] = raw[k]
+        elif lab in raw_cols:
+            df2[k] = raw[lab]
+        else:
+            df2[k] = None
+        if field['type']=='date':
+            df2[k] = pd.to_datetime(df2[k], errors='coerce')
+    return df2
+
+# 主数据
+df = load_data()
+if 'data_updated' not in st.session_state:
+    st.session_state['data_updated'] = False
+
+menu = st.sidebar.radio("功能选择", ["字段配置", "输入数据", "数据表", "分析图表"], index=1)
+
+# —— 字段配置 ——
+if menu == "字段配置":
+    st.header("字段配置（直接编辑 fields.xlsx）")
+    df_fields = pd.read_excel(FIELDS_PATH)
+    edited = st.data_editor(df_fields, hide_index=True, num_rows="dynamic", use_container_width=True)
+    if st.button("保存字段配置"):
+        edited.to_excel(FIELDS_PATH, index=False)
+        st.success("已保存 fields.xlsx，请刷新页面生效")
+
+# —— 输入数据 ——
+elif menu == "输入数据":
+    st.header("数据录入与导入")
+    df_fields = pd.read_excel(FIELDS_PATH)
+    schema = df_fields.to_dict("records")
+    tabs = st.tabs(["上传 文件", "手动输入数据"])
+
+    with tabs[0]:
+        uploaded = st.file_uploader("上传文件 (.xlsx/.csv/.txt)", type=["xlsx","csv","txt"])
+        if uploaded:
+            new_df = read_uploaded_file(uploaded, schema)
+            st.dataframe(new_df.head(), use_container_width=True)
+            if st.button("合并导入数据"):
+                combined = pd.concat([df, new_df], ignore_index=True)
+                save_data(derive_data(combined))
+                st.success("已导入并保存")
+
+    with tabs[1]:
+        st.subheader("手动输入数据")
+        with st.form("manual_input", clear_on_submit=True):
+            inputs = {}
+            cols = st.columns(2)
+            for i, f in enumerate(schema):
+                col = cols[i % 2]
+                k, lab, ftype, step, unit = f['key'], f['label'], f['type'], f.get('step',1), f.get('unit','')
+                label = f"{lab} ({unit})" if unit else lab
+                wkey = f"inp_{k}"
+                if ftype=='date':
+                    inputs[k] = col.date_input(label, key=wkey)
+                elif ftype=='float':
+                    fmt = f.get('format', None)
+                    if fmt:
+                        mv = 100.0 if '%' in fmt else None
+                        inputs[k] = col.number_input(label, 0.0, 0.0, mv, float(step), format=fmt, key=wkey)
+                    else:
+                        dec = str(step).split('.')[-1].rstrip('0')
+                        af = f"%.{len(dec)}f"
+                        inputs[k] = col.number_input(label, 0.0, 0.0, None, float(step), format=af, key=wkey)
+                elif ftype=='int':
+                    inputs[k] = col.number_input(label, 0, 0, None, int(step), key=wkey)
+                else:
+                    inputs[k] = col.text_input(label, key=wkey)
+            if st.form_submit_button("保存"):
+                for f in schema:
+                    if f['type']=='date':
+                        inputs[f['key']] = pd.to_datetime(inputs[f['key']])
+                new_row = pd.DataFrame([inputs])
+                save_data(derive_data(pd.concat([df, new_row], ignore_index=True)))
+                st.success("新行已保存并计算派生列")
+
+
+elif menu == "数据表":
+    st.header("数据表管理")
+
+    # 1️⃣ 数值小数位数
+    decimal_places = st.sidebar.number_input(
+        "数值小数位数", min_value=0, max_value=6, value=3, step=1
+    )
+
+    # —— 先读当前 schema ——
+    try:
+        with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+            schema = json.load(f)
+    except Exception:
+        schema = DEFAULT_SCHEMA
+    # 取出所有 key（列名）
+    keys = [field["key"] for field in schema]
+
+    # 2️⃣ 只保留已配置的列
+    df_show = df[keys].copy()
+
+    # 格式化“日期”列
+    if "日期" in df_show.columns:
+        df_show["日期"] = pd.to_datetime(df_show["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # 四舍五入除日期外的数值列
+    for c in df_show.columns:
+        if c != "日期":
+            df_show[c] = df_show[c].round(decimal_places)
+
+    # 3️⃣ 渲染可编辑表格
+    edited = st.data_editor(
+        df_show,
+        hide_index=True,
+        num_rows="dynamic",
+        use_container_width=True,
+    )
+
+    # 4️⃣ 保存“表内编辑 & 行增删”
+    if st.button("保存修改"):
+        # 恢复日期类型
+        edited['日期'] = pd.to_datetime(edited['日期'], errors='coerce')
+        save_data(edited)
+        st.success("已保存表内编辑和行增删")
+        st.experimental_rerun()
+
+    # 5️⃣ 添加公式列
+    st.markdown("### 添加公式列")
+    with st.form("add_formula", clear_on_submit=True):
+        c1, c2 = st.columns([1,2])
+        new_col = c1.text_input("新列名")
+        formula = c2.text_input("公式（如：原矿吨数 * 原矿金品位 * 回收率）")
+        if st.form_submit_button("添加"):
+            try:
+                df[new_col] = df.eval(formula)
+                save_data(df)
+                st.success(f"已添加新列：{new_col}")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"公式有误：{e}")
+
+    # 6️⃣ 删除行（按日期）
+    st.markdown("### 删除行")
+    unique_dates = df_show['日期'].unique().tolist()
+    to_delete_dates = st.multiselect(
+        "请选择要删除的日期", options=unique_dates
+    )
+    if st.button("删除选中行"):
+        if to_delete_dates:
+            df['日期'] = pd.to_datetime(df['日期'], errors='coerce')\
+                          .dt.strftime('%Y-%m-%d')
+            df.drop(df[df['日期'].isin(to_delete_dates)].index, inplace=True)
+            save_data(df)
+            st.success(f"已删除 {len(to_delete_dates)} 天的数据行")
+            st.experimental_rerun()
+
+elif menu == "分析图表":
+    st.header("指标趋势分析")
+    dfp = df.copy()  # 这里是关键，确保dfp变量存在
+    dfp['日期'] = pd.to_datetime(dfp['日期'], errors='coerce')
+    dfp = dfp.dropna(subset=['日期'])
+    metrics = [col for col in dfp.columns if col != '日期']  # <-- 在这里定义
+    dfp = df.copy()
+    dfp['日期'] = pd.to_datetime(dfp['日期'], errors='coerce')
+    dfp = dfp.dropna(subset=['日期'])
+    metrics = [col for col in dfp.columns if col != '日期']
+
+    if dfp['日期'].notna().any():
+        min_date = dfp['日期'].min().date()
+        max_date = dfp['日期'].max().date()
+    else:
+        today = datetime.today().date()
+        min_date = max_date = today
+    left, right = st.columns([1, 3])
+    with left:
+        start = st.date_input("开始日期", min_value=min_date, max_value=max_date, value=min_date)
+        end = st.date_input("结束日期", min_value=min_date, max_value=max_date, value=max_date)
+        left_metrics = st.multiselect("左轴指标（虚线）", metrics, default=["回收率"])
+        right_metrics = st.multiselect("右轴指标（实线）", metrics, default=["原矿吨数"])
+        left_zero = st.checkbox("左轴从0开始", value=False)
+        right_zero = st.checkbox("右轴从0开始", value=False)
+    with right:
+        dfsel = dfp[(dfp['日期'] >= pd.to_datetime(start)) & (dfp['日期'] <= pd.to_datetime(end))]
+        if not dfsel.empty and (left_metrics or right_metrics):
+            fig = go.Figure()
+            color_list = px.colors.qualitative.Set1 + px.colors.qualitative.Set2
+            for idx, m in enumerate(left_metrics):
+                fig.add_trace(go.Scatter(
+                    x=dfsel['日期'], y=dfsel[m], mode='lines+markers',
+                    name=f"左-{m}", yaxis='y1',
+                    line=dict(dash='dash', color=color_list[idx % len(color_list)]),
+                    marker=dict(symbol='circle'),
+                    hovertemplate = f"日期: %{{x|%Y-%m-%d}}<br>{m}: %{{y:.4f}}<extra></extra>",
+                ))
+            for idx, m in enumerate(right_metrics):
+                fig.add_trace(go.Scatter(
+                    x=dfsel['日期'], y=dfsel[m], mode='lines+markers',
+                    name=f"右-{m}", yaxis='y2',
+                    line=dict(color=color_list[(idx + 5) % len(color_list)]),
+                    marker=dict(symbol='x'),
+                    hovertemplate = f"日期: %{{x|%Y-%m-%d}}<br>{m}: %{{y:.4f}}<extra></extra>",
+                ))
+            fig.update_layout(
+                xaxis=dict(title='日期'),
+                yaxis=dict(title='左轴', zeroline=left_zero, rangemode='tozero' if left_zero else 'normal'),
+                yaxis2=dict(title='右轴', overlaying='y', side='right', zeroline=right_zero, rangemode='tozero' if right_zero else 'normal'),
+                legend=dict(x=0.01, y=0.99), hovermode='x unified', margin=dict(l=20, r=20, t=20, b=40)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("请选择有效的日期范围和指标")
