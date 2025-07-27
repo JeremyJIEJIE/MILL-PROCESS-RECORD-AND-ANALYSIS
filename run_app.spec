@@ -1,5 +1,3 @@
-from PyInstaller.utils.hooks import collect_data_files  # 新增这一行！
-
 a = Analysis(
     ['run_app.py'],
     pathex=[],
@@ -11,7 +9,7 @@ a = Analysis(
         ("C:/Users/dt/AppData/Local/Programs/Python/Python312/Lib/site-packages/st_aggrid/frontend/build", "./st_aggrid/frontend/build"),
         ("C:/Users/dt/AppData/Local/Programs/Python/Python312/Lib/site-packages/st_aggrid/json", "./st_aggrid/json"),
         ("data.xlsx", "."),
-    ] + collect_data_files('plotly'),      # 关键行：自动打包plotly所有静态资源
+    ]
     hiddenimports=[
         'streamlit',
         'pandas',
